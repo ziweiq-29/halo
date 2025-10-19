@@ -81,10 +81,10 @@ def main():
     sys.stderr.flush()
 
     parser = argparse.ArgumentParser(description="Pressio external command for dual halo analysis")
-    parser.add_argument("--input", required=True)                 # Pressio 传入的临时输入 .pressioinXXXX
-    parser.add_argument("--exe", required=True)                   # reeber 可执行文件
-    parser.add_argument("--decompressed", required=True)          # ✅ 必须由 Pressio 传入 .pressiooutXXXX
-    parser.add_argument("--dim", type=int, action="append")       # ✅ Pressio 会传 --dim 512 三次
+    parser.add_argument("--input", required=True)                 
+    parser.add_argument("--exe", required=True)                   
+    parser.add_argument("--decompressed", required=True)         
+    parser.add_argument("--dim", type=int, action="append")      
     args, unknown = parser.parse_known_args()
 
 
