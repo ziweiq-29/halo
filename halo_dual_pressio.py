@@ -41,23 +41,18 @@ def read_halo_output(filename: str) -> pd.DataFrame:
     return pd.DataFrame(results)
 
 
-def run_halo_analysis(binary_file, dims, exe_path, tag):
+def run_halo_analysis(binary_file, dims, exe_path, tag, eval_uuid):
     print("run run_halo_analysis()", file=sys.stderr)
     sys.stderr.flush()
 
-    tmp_h5 = f"{tag}.h5"
-    tmp_out = f"halo_output_{tag}.txt"
+    # ✅ 用 eval_uuid 让文件名唯一，避免并行冲突
+    tmp_h5 = f"{tag}_{eval_uuid}.h5"
+    tmp_out = f"halo_output_{tag}_{eval_uuid}.txt"
 
-
-    # data = np.fromfile(binary_file, dtype=np.float32).reshape(list(reversed(dims)))
     data = np.fromfile(binary_file, dtype=np.float32).reshape(tuple(reversed(dims)))
-    # with h5py.File(tmp_h5, "w") as f:
-    #     f.create_dataset("native_fields/baryon_density", data=data)
     with h5py.File(tmp_h5, "w") as f:
         grp = f.require_group("native_fields")
         grp.create_dataset("baryon_density", data=data)
-
-
 
     cmd = [
         exe_path,
@@ -72,19 +67,36 @@ def run_halo_analysis(binary_file, dims, exe_path, tag):
         sys.exit(1)
 
     df = read_halo_output(tmp_out)
-    print(f"✅ {tag}: {len(df)} halos, total mass={df['mass'].sum():.4e}")
+    print(f"halo:{tag}_num_halos={len(df)}")
+    print(f"halo:{tag}_total_mass={df['mass'].sum():.4e}")
     return df
 
 
+
+def cleanup(eval_uuid):
+    files = [
+        f"original_{eval_uuid}.h5",
+        f"decompressed_{eval_uuid}.h5",
+        f"halo_output_original_{eval_uuid}.txt",
+        f"halo_output_decompressed_{eval_uuid}.txt"
+    ]
+    for f in files:
+        if os.path.exists(f):
+            os.remove(f)
+            # print(f"🧹 Removed temp file: {f}", file=sys.stderr)
+
 def main():
+    
     print("🚀 Script started!", file=sys.stderr)
     sys.stderr.flush()
 
     parser = argparse.ArgumentParser(description="Pressio external command for dual halo analysis")
     parser.add_argument("--input", required=True)                 
-    parser.add_argument("--exe", required=True)                   
+    parser.add_argument("--external_exe", required=True)                   
     parser.add_argument("--decompressed", required=True)         
-    parser.add_argument("--dim", type=int, action="append")      
+    parser.add_argument("--dim", type=int, action="append")  
+    parser.add_argument("--eval_uuid", default="default", help="Unique ID for parallel safe temp files")
+    
     args, unknown = parser.parse_known_args()
 
 
@@ -93,31 +105,20 @@ def main():
     print(f"🔹 Unknown: {unknown}", file=sys.stderr)
     print(f"▶ args.input: {args.input}", file=sys.stderr)
     print(f"▶ args.decompressed: {args.decompressed}", file=sys.stderr)
-    print(f"▶ Halo executable: {args.exe}", file=sys.stderr)
+    print(f"▶ Halo executable: {args.external_exe}", file=sys.stderr)
     print(f"📏 dims(from --dim): {dims}", file=sys.stderr)
     sys.stderr.flush()
 
 
-    orig_df = run_halo_analysis(args.input,       dims, args.exe, tag="original")
-    dec_df  = run_halo_analysis(args.decompressed,dims, args.exe, tag="decompressed")
+    orig_df = run_halo_analysis(args.input, dims, args.external_exe, tag="original", eval_uuid=args.eval_uuid)
+    dec_df  = run_halo_analysis(args.decompressed, dims, args.external_exe, tag="decompressed", eval_uuid=args.eval_uuid)
+
     
-    # orig_df.to_csv("halo_original.csv", index=False)
-    # dec_df.to_csv("halo_decompressed.csv", index=False)
+    orig_df.to_csv("halo_original.csv", index=False)
+    dec_df.to_csv("halo_decompressed.csv", index=False)
+    cleanup(args.eval_uuid)
     
 
-    # 对比
-    # merged = orig_df.merge(dec_df, on="id", suffixes=("_orig", "_dec"), how="inner")
-    # merged["mass_diff"] = merged["mass_dec"] - merged["mass_orig"]
-
-    # print("\n=== Halo Comparison ===", file=sys.stderr)
-    # print(f"原始 halo 数量: {len(orig_df)}", file=sys.stderr)
-    # print(f"解压 halo 数量: {len(dec_df)}", file=sys.stderr)
-    # print(f"平均质量差: {merged['mass_diff'].mean():.4e}", file=sys.stderr)
-    # print(f"最大质量差: {merged['mass_diff'].abs().max():.4e}", file=sys.stderr)
-    # sys.stderr.flush()
-
-    # merged.to_csv("halo_comparison.csv", index=False)
-    # print("\n✅ halo_comparison.csv 已生成", file=sys.stderr)
 
 
 
