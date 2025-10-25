@@ -7,7 +7,6 @@ import subprocess
 import os
 import sys
 sys.stdout = sys.stderr
-# print("🚀 Script started!", file=sys.stderr)
 sys.stderr.flush()
 
 def run_cmd(cmd):
@@ -102,11 +101,11 @@ def main():
 
     dims = args.dim if args.dim else []
     print("sys.argv:", sys.argv, file=sys.stderr)
-    print(f"🔹 Unknown: {unknown}", file=sys.stderr)
-    print(f"▶ args.input: {args.input}", file=sys.stderr)
-    print(f"▶ args.decompressed: {args.decompressed}", file=sys.stderr)
-    print(f"▶ Halo executable: {args.external_exe}", file=sys.stderr)
-    print(f"📏 dims(from --dim): {dims}", file=sys.stderr)
+    # print(f"🔹 Unknown: {unknown}", file=sys.stderr)
+    # print(f"▶ args.input: {args.input}", file=sys.stderr)
+    # print(f"▶ args.decompressed: {args.decompressed}", file=sys.stderr)
+    # print(f"▶ Halo executable: {args.external_exe}", file=sys.stderr)
+    # print(f"📏 dims(from --dim): {dims}", file=sys.stderr)
     sys.stderr.flush()
 
 
@@ -116,6 +115,9 @@ def main():
     
     orig_df.to_csv("halo_original.csv", index=False)
     dec_df.to_csv("halo_decompressed.csv", index=False)
+    
+    
+    
     cleanup(args.eval_uuid)
     
 
