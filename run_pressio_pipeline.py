@@ -4,12 +4,13 @@ import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import csv
-
-
+import numpy as np
+rel_errors = np.logspace(-6, -1, num=20).tolist()
 input_file = "/home/ziweiq2/LibPressio/dataset/SDRBENCH-EXASKY-NYX-512x512x512/baryon_density.f32"
 dims = [512, 512, 512]
 halo_exe = "/home/ziweiq2/halo/reeber/build/examples/amr-connected-components/amr_connected_components_float"
-rel_errors = [1e-1 ,5e-2 ,1e-2, 5e-3 ,1e-3, 5e-4, 1e-4 ,5e-5, 1e-5, 5e-6, 1e-6]
+# rel_errors.append([1e-1 ,5e-2 ,1e-2, 5e-3 ,1e-3, 5e-4, 1e-4 ,5e-5, 1e-5, 5e-6, 1e-6])
+# rel_errors = [1e-1 ,5e-2]
 external_script = "halo_dual_pressio.py"
 pressio = "pressio"
 
@@ -29,7 +30,25 @@ for rel in rel_errors:
         "-o", "external:use_many=1",
         "-o", f"external:command=python3 {external_script} --external_exe {halo_exe}"
     ]
-    subprocess.run(pressio_cmd, check=True)
+    # subprocess.run(pressio_cmd, check=True)
+    # ✅ Run Pressio and capture output
+    pressio_out = subprocess.run(pressio_cmd, check=True, capture_output=True, text=True)
+
+    # ✅ Parse compression_ratio from pressio output
+    comp_ratio = None
+    for line in pressio_out.stderr.splitlines():
+        if "size:compression_ratio" in line:
+            try:
+                comp_ratio = float(line.split("=")[1].strip())
+            except:
+                comp_ratio = None
+            break
+
+    if comp_ratio is None:
+        print("⚠️  Warning: compression_ratio not found for this rel. Check if -m size is enabled.")
+    else:
+        print(f"✅ compression_ratio = {comp_ratio}")
+
 
 
     with open("halo_metrics.csv") as f:
@@ -40,7 +59,10 @@ for rel in rel_errors:
         p99 = float(r["p99"])
         wdist = float(r["wasserstein"])
 
-    csv_rows.append([rel, mean, median, p90, p99, wdist])
+
+
+    # csv_rows.append([rel, mean, median, p90, p99, wdist])
+    csv_rows.append([rel, mean, median, p90, p99, wdist, comp_ratio])
 
     os.rename("halo_original.csv", f"halo_original_rel{rel}.csv")
     os.rename("halo_decompressed.csv", f"halo_decompressed_rel{rel}.csv")
@@ -51,7 +73,8 @@ for rel in rel_errors:
             os.remove(f)
 
 
-df = pd.DataFrame(csv_rows, columns=["rel_error", "mean", "median", "p90", "p99", "wasserstein"])
+# df = pd.DataFrame(csv_rows, columns=["rel_error", "mean", "median", "p90", "p99", "wasserstein"])
+df = pd.DataFrame(csv_rows, columns=["rel_error", "mean", "median", "p90", "p99", "wasserstein", "compression_ratio"])  # ✅ NEW
 df.to_csv("metrics_summary.csv", index=False)
 print("\n✅ Saved metrics_summary.csv")
 
@@ -75,4 +98,6 @@ plot_metric("median", "median_vs_relerror.png", "Median NN Distance")
 plot_metric("p90", "p90_vs_relerror.png", "90% NN Distance")
 plot_metric("p99", "p99_vs_relerror.png", "99% NN Distance")
 plot_metric("wasserstein", "wasserstein_vs_relerror.png", "Wasserstein Mass Distance")
+plot_metric("compression_ratio", "compression_ratio_vs_relerror.png", "Compression Ratio")  
+
 
