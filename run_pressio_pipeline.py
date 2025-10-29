@@ -5,12 +5,14 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import csv
 import numpy as np
-rel_errors = np.logspace(-6, -1, num=20).tolist()
+
 input_file = "/home/ziweiq2/LibPressio/dataset/SDRBENCH-EXASKY-NYX-512x512x512/baryon_density.f32"
 dims = [512, 512, 512]
 halo_exe = "/home/ziweiq2/halo/reeber/build/examples/amr-connected-components/amr_connected_components_float"
-# rel_errors.append([1e-1 ,5e-2 ,1e-2, 5e-3 ,1e-3, 5e-4, 1e-4 ,5e-5, 1e-5, 5e-6, 1e-6])
-# rel_errors = [1e-1 ,5e-2]
+
+rel_errors = np.logspace(-6, -1, num=20).tolist()  
+# rel_errors.extend([1e-1 ,5e-2 ,1e-2, 5e-3 ,1e-3, 5e-4, 1e-4 ,5e-5, 1e-5, 5e-6, 1e-6])
+rel_errors = sorted(list(set(rel_errors)), reverse=True) 
 external_script = "halo_dual_pressio.py"
 pressio = "pressio"
 
