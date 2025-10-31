@@ -96,10 +96,10 @@ def compute_metrics(df_orig: pd.DataFrame, df_dec: pd.DataFrame):
     p99    = float(np.percentile(dists, 99))
     dmax   = float(np.max(dists))
     wmass  = float(wasserstein_distance(mass_orig, mass_dec))
-
+    p999   = float(np.percentile(dists, 99.9)) 
     return {
         "mean": mean, "median": median, "p90": p90, "p99": p99, "max": dmax,
-        "w_mass": wmass,
+        "w_mass": wmass,"p999": p999,
         "num_halos_orig": int(len(df_orig)),
         "num_halos_decomp": int(len(df_dec)),
     }
@@ -142,15 +142,16 @@ def main():
     print(f"90%:   {m['p90']:.4f}")
     print(f"99%:   {m['p99']:.4f}")
     print(f"Max:   {m['max']:.4f}")
+    print(f"99.9%: {m['p999']:.4f}" )
     print(f"Wasserstein Distance between mass distributions: {m['w_mass']}")
 
 
     out_row = [[
         m["num_halos_orig"], m["num_halos_decomp"],
-        m["mean"], m["median"], m["p90"], m["p99"], m["w_mass"]
+        m["mean"], m["median"], m["p90"], m["p99"], m["w_mass"],m['max'],m['p999']
     ]]
     pd.DataFrame(out_row, columns=[
-        "num_halos_orig","num_halos_decomp","mean","median","p90","p99","wasserstein"
+        "num_halos_orig","num_halos_decomp","mean","median","p90","p99","wasserstein","max","p999"
     ]).to_csv("halo_metrics.csv", index=False)
 
 
