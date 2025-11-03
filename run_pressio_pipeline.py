@@ -11,7 +11,7 @@ input_file = "/home/ziweiq2/LibPressio/dataset/SDRBENCH-EXASKY-NYX-512x512x512/b
 dims = [512, 512, 512]
 halo_exe = "/home/ziweiq2/halo/reeber/build/examples/amr-connected-components/amr_connected_components_float"
 
-rel_errors = np.logspace(-6, -1, num=20).tolist()  
+rel_errors = np.logspace(-7, np.log10(6.15e-6), num=20)  
 # rel_errors.extend([1e-1 ,5e-2 ,1e-2, 5e-3 ,1e-3, 5e-4, 1e-4 ,5e-5, 1e-5, 5e-6, 1e-6])
 rel_errors = sorted(list(set(rel_errors)), reverse=True) 
 external_script = "halo_dual_pressio.py"
