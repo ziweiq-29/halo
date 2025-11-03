@@ -88,6 +88,14 @@ def compute_metrics(df_orig: pd.DataFrame, df_dec: pd.DataFrame):
     nn = NearestNeighbors(n_neighbors=1, algorithm='kd_tree').fit(dec_xyz)
     dists, _ = nn.kneighbors(orig_xyz)
     dists = dists.flatten()
+    
+    
+    nn_rev = NearestNeighbors(n_neighbors=1, algorithm='kd_tree').fit(orig_xyz)
+    dists_rev, _ = nn_rev.kneighbors(dec_xyz)
+    dists_rev = dists_rev.flatten()
+    
+    dists_sym = np.concatenate([dists, dists_rev])
+
 
     print("Nearest Neighbor Distance Stats:")
     mean   = float(np.mean(dists))
@@ -97,9 +105,12 @@ def compute_metrics(df_orig: pd.DataFrame, df_dec: pd.DataFrame):
     dmax   = float(np.max(dists))
     wmass  = float(wasserstein_distance(mass_orig, mass_dec))
     p999   = float(np.percentile(dists, 99.9)) 
+    p99_sym = float(np.percentile(dists_sym, 99))
+    # p99_sym = float((np.percentile(dists, 99) + np.percentile(dists_rev, 99)) / 2)
+
     return {
         "mean": mean, "median": median, "p90": p90, "p99": p99, "max": dmax,
-        "w_mass": wmass,"p999": p999,
+        "w_mass": wmass,"p999": p999, "p99_sym": p99_sym,
         "num_halos_orig": int(len(df_orig)),
         "num_halos_decomp": int(len(df_dec)),
     }
@@ -143,15 +154,16 @@ def main():
     print(f"99%:   {m['p99']:.4f}")
     print(f"Max:   {m['max']:.4f}")
     print(f"99.9%: {m['p999']:.4f}" )
+    print(f"99%: {m['p99_sym']:.4f}" )
     print(f"Wasserstein Distance between mass distributions: {m['w_mass']}")
 
 
     out_row = [[
         m["num_halos_orig"], m["num_halos_decomp"],
-        m["mean"], m["median"], m["p90"], m["p99"], m["w_mass"],m['max'],m['p999']
+        m["mean"], m["median"], m["p90"], m["p99"], m["w_mass"],m['max'],m['p999'],m['p99_sym']
     ]]
     pd.DataFrame(out_row, columns=[
-        "num_halos_orig","num_halos_decomp","mean","median","p90","p99","wasserstein","max","p999"
+        "num_halos_orig","num_halos_decomp","mean","median","p90","p99","wasserstein","max","p999","p99_sym"
     ]).to_csv("halo_metrics.csv", index=False)
 
 
