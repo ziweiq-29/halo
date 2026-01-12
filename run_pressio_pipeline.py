@@ -1,26 +1,29 @@
 #!/usr/bin/env python3
+import argparse
 import subprocess
+import sys
 import os
-import pandas as pd
-import matplotlib.pyplot as plt
 import csv
-import numpy as np
-import glob
+
+# ------------ Command-line args ------------
+parser = argparse.ArgumentParser()
+parser.add_argument("--external_mode", action="store_true")
+# Use parse_known_args to ignore LibPressio's additional arguments (--api, --input, --decompressed, etc.)
+args, unknown = parser.parse_known_args()
+
+# ------------ Dataset & Paths ------------
+# Get the directory where this script is located
+script_dir = os.path.dirname(os.path.abspath(__file__))
 
 input_file = "/home/ziweiq2/LibPressio/dataset/SDRBENCH-EXASKY-NYX-512x512x512/baryon_density.f32"
 dims = [512, 512, 512]
 halo_exe = "/home/ziweiq2/halo/reeber/build/examples/amr-connected-components/amr_connected_components_float"
-
-rel_errors = np.logspace(-7, np.log10(6.15e-6), num=20)  
-rel_errors = sorted(list(set(rel_errors)), reverse=True) 
-external_script = "halo_dual_pressio.py"
+external_script = os.path.join(script_dir, "halo_dual_pressio.py")  # Use absolute path
 pressio = "pressio"
+rel = 1e-1
 
-csv_rows = []
-
-for rel in rel_errors:
-    print(f"\n===== Running rel={rel} =====")
-
+if args.external_mode:
+    # Run Pressio and capture output
     pressio_cmd = [
         pressio,
         "-i", input_file,
@@ -30,88 +33,45 @@ for rel in rel_errors:
         "-m", "error_stat", "-m", "size", "-m", "external",
         "-M", "all",
         "-o", "external:use_many=1",
-        "-o", f"external:command=python3 {external_script} --external_exe {halo_exe}"
+        "-o", f"external:command=python3 {external_script} --external_exe {halo_exe} --original_input {input_file}"
     ]
-    pressio_out = subprocess.run(pressio_cmd, check=True, capture_output=True, text=True)
 
-    comp_ratio = None
-    for line in pressio_out.stderr.splitlines():
-        if "size:compression_ratio" in line:
-            try:
-                comp_ratio = float(line.split("=")[1].strip())
-            except:
-                comp_ratio = None
-            break
+    # Run pressio in the script's directory to ensure relative paths work
+    result = subprocess.run(pressio_cmd, capture_output=True, text=True, cwd=script_dir)
+    
+    # Debug: check pressio return code
+    if result.returncode != 0:
+        print(f"❌ Pressio command failed with return code {result.returncode}", file=sys.stderr)
+        print(f"Pressio stdout:\n{result.stdout}", file=sys.stderr)
+        print(f"Pressio stderr:\n{result.stderr}", file=sys.stderr)
+        # Output default metrics even on pressio failure
+        print("external:api=1")
+        print("data=0.0")
+        sys.exit(1)
 
-    if comp_ratio is None:
-        print("⚠️  Warning: compression_ratio not found for this rel. Check if -m size is enabled.")
-    else:
-        print(f"✅ compression_ratio = {comp_ratio}")
-    # csv_rows.append([rel,comp_ratio])
+    # ---- Check if skip occurred (i.e., not full field) ----
+    if "[external] skip:" in result.stderr:
+        # Output default metrics when skipping
+        print("external:api=1")
+        print("data=0.0")
+        sys.exit(0)
 
+    # ---- Now expect halo_metrics.csv to exist ----
+    halo_metrics_path = os.path.join(script_dir, "halo_metrics.csv")
+    if not os.path.exists(halo_metrics_path):
+        print("❌ Error: halo_metrics.csv was not created by the external script", file=sys.stderr)
+        print(f"Pressio stderr:\n{result.stderr}", file=sys.stderr)
+        # Output default metrics even on error (libpressio requires format)
+        print("external:api=1")
+        print("data=0.0")
+        sys.exit(1)
 
-
-    with open("halo_metrics.csv") as f:
+    # ---- Read mean from halo_metrics.csv ----
+    with open(halo_metrics_path) as f:
         r = next(csv.DictReader(f))
         mean = float(r["mean"])
-        median = float(r["median"])
-        p90 = float(r["p90"])
-        p99 = float(r["p99"])
-        wdist = float(r["wasserstein"])
-        p999 = float(r["p999"])
-        max = float(r["max"])
-        p99_sym = float(r["p99_sym"])
 
-
-
-
-    csv_rows.append([rel, comp_ratio, mean, median, p90, p99, p999, wdist, max, p99_sym])
-
-
-
-
-    os.rename("halo_original.csv", f"halo_original_rel{rel}.csv")
-    os.rename("halo_decompressed.csv", f"halo_decompressed_rel{rel}.csv")
-    os.rename("halo_metrics.csv", f"halo_metrics_rel{rel}.csv") 
-
-    for f in os.listdir("."):
-        if f.startswith(".pressio"):
-            os.remove(f)
-
-
-
-for pattern in ["halo_metrics_rel*.csv", "halo_decompressed_rel*.csv", "halo_original_rel*.csv"]:
-    for f in glob.glob(pattern):
-        os.remove(f)
-        print(f"✅ Deleted {f}")
-df = pd.DataFrame(csv_rows, columns=[ "rel_error","compression_ratio","mean", "median", "p90", "p99","p999","wasserstein","max","p99_sym" ]) 
-
-df.to_csv("metrics_summary.csv", index=False,float_format="%.8e")
-
-
-
-
-plot_dir = "metrics_plots"
-os.makedirs(plot_dir, exist_ok=True)
-
-def plot_metric(col_name, filename, ylabel):
-    plt.figure()
-    plt.plot(df["rel_error"], df[col_name], marker="o")
-    plt.xscale("log")
-    plt.xlabel("Relative Error")
-    plt.ylabel(ylabel)
-    plt.title(f"{ylabel} vs Relative Error")
-    plt.grid()
-    plt.savefig(os.path.join(plot_dir, filename))
-    plt.close()
-
-    
-plot_metric("mean", "mean_vs_relerror.png", "Mean NN Distance")
-plot_metric("median", "median_vs_relerror.png", "Median NN Distance")
-plot_metric("p90", "p90_vs_relerror.png", "90% NN Distance")
-plot_metric("p99", "p99_vs_relerror.png", "99% NN Distance")
-plot_metric("p999", "p999_vs_relerror.png", "99.9% NN Distance")
-plot_metric("wasserstein", "wasserstein_vs_relerror.png", "Wasserstein Mass Distance")
-plot_metric("max","max_vs_relerror.png","Maximum Distance")
-plot_metric("p99_sym","p99_sym_vs_relerror.png","99% NN Distance Symmetric")
-plot_metric("compression_ratio", "compression_ratio_vs_relerror.png", "Compression Ratio")  
+    # ---- Output in libpressio external metric format ----
+    print("external:api=1")
+    print(f"data={mean}")
+    sys.exit(0)

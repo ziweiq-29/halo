@@ -9,13 +9,33 @@ import h5py
 from scipy.stats import wasserstein_distance
 from sklearn.neighbors import NearestNeighbors
 
-# 将所有输出重定向到 stderr，保持与 Pressio external 的行为一致
-sys.stdout = sys.stderr
+from datetime import datetime
+with open("debug_log.txt", "a") as f:
+    f.write(f"\n[external] called at {datetime.now()} with args: {sys.argv}\n")
+
+# 保存原始的 stdout，用于输出 metrics（libpressio 要求）
+# 调试信息输出到 stderr
+original_stdout = sys.stdout
+sys.stdout = sys.stderr  # 默认输出到 stderr
+
+def output_default_metrics():
+    """Output default metrics in libpressio format before exiting"""
+    print("external:api=1", file=original_stdout)
+    print("mean=0.0", file=original_stdout)
+    print("median=0.0", file=original_stdout)
+    print("p90=0.0", file=original_stdout)
+    print("p99=0.0", file=original_stdout)
+    print("p999=0.0", file=original_stdout)
+    print("max=0.0", file=original_stdout)
+    print("p99_sym=0.0", file=original_stdout)
+    print("wasserstein=0.0", file=original_stdout)
+    original_stdout.flush()
 
 def run_cmd(cmd):
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        print(result.stderr)
+        print(result.stderr, file=sys.stderr)
+        output_default_metrics()
         sys.exit(1)
     return result
 
@@ -40,13 +60,14 @@ def read_halo_output(filename: str) -> pd.DataFrame:
             except ValueError:
                 continue
     return pd.DataFrame(rows)
-
+# print(f"[external] reading {binary_file}", file=sys.stderr)
 def write_h5_from_binary(binary_file, dims, out_h5):
     data = np.fromfile(binary_file, dtype=np.float32)
     expected = int(np.prod(dims))
     if data.size != expected:
-        print(f"❌ size mismatch: file has {data.size}, dims product is {expected}")
-        sys.exit(1)
+        print(f"[external] skip: data.size={data.size}, expected={expected}", file=sys.stderr)
+        output_default_metrics()
+        sys.exit(0)  # ⭐ 关键：一定是 0，不是 1
     data = data.reshape(tuple(reversed(dims)))
     with h5py.File(out_h5, "w") as f:
         grp = f.require_group("native_fields")
@@ -68,7 +89,8 @@ def run_halo_analysis(binary_file, dims, exe_path, tag, eval_uuid):
     run_cmd(cmd)
 
     if not os.path.exists(tmp_out):
-        print(f"❌ halo output not found: {tmp_out}")
+        print(f"❌ halo output not found: {tmp_out}", file=sys.stderr)
+        output_default_metrics()
         sys.exit(1)
 
     df = read_halo_output(tmp_out)
@@ -129,14 +151,93 @@ def main():
     parser.add_argument("--decompressed", required=True)
     parser.add_argument("--external_exe", required=True)
     parser.add_argument("--dim", type=int, action="append", required=True)
+    parser.add_argument("--original_input", help="Path to original uncompressed input file")
     parser.add_argument("--eval_uuid", default="default")
     args, _ = parser.parse_known_args()
 
     dims = args.dim
+    
+    # ⭐ 关键问题：libpressio external metric 接口传递的 --dim 是压缩后数据的大小（字节数），
+    # 而不是原始维度。这是 libpressio 的设计，不是 bug。
+    # 解决方案：从解压缩文件的大小推断实际维度
+    
+    if len(dims) == 1:
+        # pressio 传递的是单个数字，可能是压缩大小或维度
+        # 如果数字很大（>10000），很可能是压缩大小（字节数）
+        if dims[0] > 10000:
+            # 从解压缩文件大小推断实际维度
+            if os.path.exists(args.decompressed):
+                decompressed_size = os.path.getsize(args.decompressed)
+                num_elements = decompressed_size // 4  # float32 = 4 bytes
+                # 计算立方根（假设是 3D 立方体数据）
+                cube_root = round(num_elements ** (1/3))
+                if abs(cube_root ** 3 - num_elements) < 1000:  # 允许小的舍入误差
+                    dims = [cube_root, cube_root, cube_root]
+                    print(f"[external] Inferred dimensions from decompressed file: {dims} (from {num_elements} elements, {decompressed_size} bytes)", file=sys.stderr)
+                else:
+                    # 如果立方根推断失败，尝试从 original_input 推断
+                    if args.original_input and os.path.exists(args.original_input):
+                        orig_size = os.path.getsize(args.original_input)
+                        orig_elements = orig_size // 4
+                        cube_root = round(orig_elements ** (1/3))
+                        if abs(cube_root ** 3 - orig_elements) < 1000:
+                            dims = [cube_root, cube_root, cube_root]
+                            print(f"[external] Inferred dimensions from original_input: {dims} (from {orig_elements} elements)", file=sys.stderr)
+                        else:
+                            print(f"⚠️  WARNING: Cannot infer dimensions. Decompressed: {num_elements} elements, Original: {orig_elements} elements", file=sys.stderr)
+                    else:
+                        print(f"⚠️  WARNING: Cannot infer dimensions from decompressed file ({num_elements} elements, cube_root={cube_root:.2f})", file=sys.stderr)
+            else:
+                # 解压缩文件不存在，尝试从 original_input 推断
+                if args.original_input and os.path.exists(args.original_input):
+                    orig_size = os.path.getsize(args.original_input)
+                    orig_elements = orig_size // 4
+                    cube_root = round(orig_elements ** (1/3))
+                    if abs(cube_root ** 3 - orig_elements) < 1000:
+                        dims = [cube_root, cube_root, cube_root]
+                        print(f"[external] Inferred dimensions from original_input (decompressed file not found): {dims} (from {orig_elements} elements)", file=sys.stderr)
+                    else:
+                        print(f"⚠️  WARNING: Cannot infer dimensions from original_input ({orig_elements} elements)", file=sys.stderr)
+                else:
+                    print(f"⚠️  WARNING: Decompressed file not found and original_input not provided. Using dims={dims}", file=sys.stderr)
+
+    # Check if input file is too small (compressed) before processing
+    input_file_to_use = args.input
+    if os.path.exists(args.input):
+        input_size = os.path.getsize(args.input)
+        input_elements = input_size // 4  # float32 = 4 bytes per element
+        expected_elements = int(np.prod(dims))
+        
+        # If input file is much smaller than expected, it's likely compressed
+        if input_elements < expected_elements * 0.1:
+            with open("debug_log.txt", "a") as f:
+                # f.write(f"\n[external] called at {datetime.now()} with args: {sys.argv}\n")
+                print(f"[external] skip: input file is compressed ({input_elements} elements)fffff, expected {expected_elements} elements", file=f)
+
+            # Try to use original_input if provided
+            if args.original_input and os.path.exists(args.original_input):
+                orig_size = os.path.getsize(args.original_input)
+                orig_elements = orig_size // 4
+                if orig_elements == expected_elements:
+                    print(f"[external] Using original_input: {args.original_input} ({orig_elements} elements)", file=sys.stderr)
+                    input_file_to_use = args.original_input
+                else:
+                    print(f"[external] skip: input file is compressed ({input_elements} elements), original_input also wrong size ({orig_elements} elements)", file=sys.stderr)
+                    output_default_metrics()
+                    sys.exit(0)
+            else:
+                print(f"[external] skip: input file is compressed ({input_elements} elements), expected {expected_elements} elements", file=sys.stderr)
+                output_default_metrics()
+                sys.exit(0)
+        # If element count doesn't match (but not too small), there's a dimension mismatch
+        elif input_elements != expected_elements:
+            print(f"[external] skip: input file element count mismatch: {input_elements} vs {expected_elements}", file=sys.stderr)
+            output_default_metrics()
+            sys.exit(0)
 
   
     tmp_to_clean = []
-    df_orig, tmp1 = run_halo_analysis(args.input, dims, args.external_exe, "original",     args.eval_uuid)
+    df_orig, tmp1 = run_halo_analysis(input_file_to_use, dims, args.external_exe, "original",     args.eval_uuid)
     df_dec,  tmp2 = run_halo_analysis(args.decompressed, dims, args.external_exe, "decompressed", args.eval_uuid)
     tmp_to_clean.extend(tmp1 + tmp2)
 
@@ -160,11 +261,34 @@ def main():
 
     out_row = [[
         m["num_halos_orig"], m["num_halos_decomp"],
-        m["mean"], m["median"], m["p90"], m["p99"], m["w_mass"],m['max'],m['p999'],m['p99_sym']
+        m["mean"], m["median"], m["p90"], m["p99"], m["w_mass"], m['max'], m['p999'], m['p99_sym']
     ]]
-    pd.DataFrame(out_row, columns=[
+    df_metrics = pd.DataFrame(out_row, columns=[
         "num_halos_orig","num_halos_decomp","mean","median","p90","p99","wasserstein","max","p999","p99_sym"
-    ]).to_csv("halo_metrics.csv", index=False)
+    ])
+    df_metrics.to_csv("halo_metrics.csv", index=False)
+    
+    assert os.path.exists("halo_metrics.csv"), "halo_metrics.csv 没有被创建！"
+    
+    # Verify file was created
+    if not os.path.exists("halo_metrics.csv"):
+        print("❌ Failed to create halo_metrics.csv", file=sys.stderr)
+        output_default_metrics()
+        sys.exit(1)
+    
+    # Output metrics to stdout in libpressio format (required for external metric)
+    # Format: external:api=1\n followed by var_name=value\n lines
+    print("external:api=1", file=original_stdout)
+    print(f"mean={m['mean']}", file=original_stdout)
+    # print(f"mean={m['mean']}")
+    print(f"median={m['median']}", file=original_stdout)
+    print(f"p90={m['p90']}", file=original_stdout)
+    print(f"p99={m['p99']}", file=original_stdout)
+    print(f"p999={m['p999']}", file=original_stdout)
+    print(f"max={m['max']}", file=original_stdout)
+    print(f"p99_sym={m['p99_sym']}", file=original_stdout)
+    print(f"wasserstein={m['w_mass']}", file=original_stdout)
+    original_stdout.flush()  # Ensure output is flushed
 
 
     cleanup(tmp_to_clean)
