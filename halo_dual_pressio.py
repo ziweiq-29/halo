@@ -83,7 +83,7 @@ def run_halo_analysis(binary_file, dims, exe_path, tag, eval_uuid):
 
     cmd = [
         exe_path, "-b", "128", "-n", "-w",
-        "-f", "native_fields/baryon_density",
+        "-f", "native_fields/baryon_density", 
         tmp_h5, "none", "none", tmp_out
     ]
     run_cmd(cmd)
@@ -97,45 +97,18 @@ def run_halo_analysis(binary_file, dims, exe_path, tag, eval_uuid):
     print(f"halo:{tag}_num_halos={len(df)}")
     print(f"halo:{tag}_total_mass={df['mass'].sum():.4e}")
     return df, [tmp_h5, tmp_out]
-
 def compute_metrics(df_orig: pd.DataFrame, df_dec: pd.DataFrame):
-
-    dfm = pd.merge(df_orig[['id','mass']], df_dec[['id','mass']],
-                   on='id', suffixes=('_orig','_decomp'))
-    mass_orig = dfm['mass_orig'].to_numpy()
-    mass_dec  = dfm['mass_decomp'].to_numpy()
-
-    orig_xyz = df_orig[['x','y','z']].to_numpy()
-    dec_xyz  = df_dec[['x','y','z']].to_numpy()
+    orig_xyz = df_orig[['x', 'y', 'z']].to_numpy()
+    dec_xyz = df_dec[['x', 'y', 'z']].to_numpy()
+    mass_orig = df_orig['mass'].to_numpy()
+    mass_dec = df_dec['mass'].to_numpy()
     nn = NearestNeighbors(n_neighbors=1, algorithm='kd_tree').fit(dec_xyz)
-    dists, _ = nn.kneighbors(orig_xyz)
+    dists, idx = nn.kneighbors(orig_xyz)
     dists = dists.flatten()
-    
-    
-    nn_rev = NearestNeighbors(n_neighbors=1, algorithm='kd_tree').fit(orig_xyz)
-    dists_rev, _ = nn_rev.kneighbors(dec_xyz)
-    dists_rev = dists_rev.flatten()
-    
-    dists_sym = np.concatenate([dists, dists_rev])
+    idx   = idx.flatten()
+    mass_dec = mass_dec[idx]
 
-
-    print("Nearest Neighbor Distance Stats:")
-    mean   = float(np.mean(dists))
-    median = float(np.median(dists))
-    p90    = float(np.percentile(dists, 90))
-    p99    = float(np.percentile(dists, 99))
-    dmax   = float(np.max(dists))
-    wmass  = float(wasserstein_distance(mass_orig, mass_dec))
-    p999   = float(np.percentile(dists, 99.9)) 
-    p99_sym = float(np.percentile(dists_sym, 99))
-    # p99_sym = float((np.percentile(dists, 99) + np.percentile(dists_rev, 99)) / 2)
-
-    return {
-        "mean": mean, "median": median, "p90": p90, "p99": p99, "max": dmax,
-        "w_mass": wmass,"p999": p999, "p99_sym": p99_sym,
-        "num_halos_orig": int(len(df_orig)),
-        "num_halos_decomp": int(len(df_dec)),
-    }
+    return dists, mass_orig, mass_dec
 
 def cleanup(paths):
     for p in paths:
@@ -237,60 +210,27 @@ def main():
 
   
     tmp_to_clean = []
-    df_orig, tmp1 = run_halo_analysis(input_file_to_use, dims, args.external_exe, "original",     args.eval_uuid)
-    df_dec,  tmp2 = run_halo_analysis(args.decompressed, dims, args.external_exe, "decompressed", args.eval_uuid)
+    df_orig, tmp1 = run_halo_analysis(input_file_to_use, dims, args.external_exe,
+                                      "original", args.eval_uuid)
+    df_dec,  tmp2 = run_halo_analysis(args.decompressed, dims, args.external_exe,
+                                      "decompressed", args.eval_uuid)
     tmp_to_clean.extend(tmp1 + tmp2)
 
-
+    # 如果你还想保留 halo 的 CSV，可以保留这两行；不需要可以删掉
     df_orig.to_csv("halo_original.csv", index=False)
     df_dec.to_csv("halo_decompressed.csv", index=False)
 
+    # 只关心 dists：compute_metrics 返回 (dists, mass_orig, mass_dec)
+    dists, mass_orig, mass_dec = compute_metrics(df_orig, df_dec)
 
-    m = compute_metrics(df_orig, df_dec)
+    # 保存 dists，供 run_pressio_pipeline.py 或其他代码读取
+    np.save("dists.npy", dists)
+    np.save("mass_orig.npy", mass_orig)
+    np.save("mass_dec.npy", mass_dec)   
+    # 调试信息写到 stderr，不影响 external stdout 协议
+    print(f"[external] saved dists, shape={dists.shape}", file=sys.stderr)
 
-    print("Nearest Neighbor Distance Stats:")
-    print(f"Mean:  {m['mean']:.4f}")
-    print(f"Median:{m['median']:.4f}")
-    print(f"90%:   {m['p90']:.4f}")
-    print(f"99%:   {m['p99']:.4f}")
-    print(f"Max:   {m['max']:.4f}")
-    print(f"99.9%: {m['p999']:.4f}" )
-    print(f"99%: {m['p99_sym']:.4f}" )
-    print(f"Wasserstein Distance between mass distributions: {m['w_mass']}")
-
-
-    out_row = [[
-        m["num_halos_orig"], m["num_halos_decomp"],
-        m["mean"], m["median"], m["p90"], m["p99"], m["w_mass"], m['max'], m['p999'], m['p99_sym']
-    ]]
-    df_metrics = pd.DataFrame(out_row, columns=[
-        "num_halos_orig","num_halos_decomp","mean","median","p90","p99","wasserstein","max","p999","p99_sym"
-    ])
-    df_metrics.to_csv("halo_metrics.csv", index=False)
-    
-    assert os.path.exists("halo_metrics.csv"), "halo_metrics.csv 没有被创建！"
-    
-    # Verify file was created
-    if not os.path.exists("halo_metrics.csv"):
-        print("❌ Failed to create halo_metrics.csv", file=sys.stderr)
-        output_default_metrics()
-        sys.exit(1)
-    
-    # Output metrics to stdout in libpressio format (required for external metric)
-    # Format: external:api=1\n followed by var_name=value\n lines
-    print("external:api=1", file=original_stdout)
-    print(f"mean={m['mean']}", file=original_stdout)
-    # print(f"mean={m['mean']}")
-    print(f"median={m['median']}", file=original_stdout)
-    print(f"p90={m['p90']}", file=original_stdout)
-    print(f"p99={m['p99']}", file=original_stdout)
-    print(f"p999={m['p999']}", file=original_stdout)
-    print(f"max={m['max']}", file=original_stdout)
-    print(f"p99_sym={m['p99_sym']}", file=original_stdout)
-    print(f"wasserstein={m['w_mass']}", file=original_stdout)
-    original_stdout.flush()  # Ensure output is flushed
-
-
+    # 清理临时文件
     cleanup(tmp_to_clean)
 
 if __name__ == "__main__":
