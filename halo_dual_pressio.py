@@ -83,7 +83,7 @@ def run_halo_analysis(binary_file, dims, exe_path, tag, eval_uuid):
 
     cmd = [
         exe_path, "-b", "128", "-n", "-w",
-        "-f", "native_fields/baryon_density", 
+        "-f", "native_fields/baryon_density",
         tmp_h5, "none", "none", tmp_out
     ]
     run_cmd(cmd)
@@ -129,11 +129,11 @@ def main():
     args, _ = parser.parse_known_args()
 
     dims = args.dim
-    
+
     # ⭐ 关键问题：libpressio external metric 接口传递的 --dim 是压缩后数据的大小（字节数），
     # 而不是原始维度。这是 libpressio 的设计，不是 bug。
     # 解决方案：从解压缩文件的大小推断实际维度
-    
+
     if len(dims) == 1:
         # pressio 传递的是单个数字，可能是压缩大小或维度
         # 如果数字很大（>10000），很可能是压缩大小（字节数）
@@ -180,12 +180,12 @@ def main():
         input_size = os.path.getsize(args.input)
         input_elements = input_size // 4  # float32 = 4 bytes per element
         expected_elements = int(np.prod(dims))
-        
+
         # If input file is much smaller than expected, it's likely compressed
         if input_elements < expected_elements * 0.1:
             with open("debug_log.txt", "a") as f:
                 # f.write(f"\n[external] called at {datetime.now()} with args: {sys.argv}\n")
-                print(f"[external] skip: input file is compressed ({input_elements} elements)fffff, expected {expected_elements} elements", file=f)
+                print(f"[external] skip: input file is compressed ({input_elements} elements), expected {expected_elements} elements", file=f)
 
             # Try to use original_input if provided
             if args.original_input and os.path.exists(args.original_input):
@@ -208,7 +208,6 @@ def main():
             output_default_metrics()
             sys.exit(0)
 
-  
     tmp_to_clean = []
     df_orig, tmp1 = run_halo_analysis(input_file_to_use, dims, args.external_exe,
                                       "original", args.eval_uuid)
@@ -216,21 +215,19 @@ def main():
                                       "decompressed", args.eval_uuid)
     tmp_to_clean.extend(tmp1 + tmp2)
 
-    # 如果你还想保留 halo 的 CSV，可以保留这两行；不需要可以删掉
-    df_orig.to_csv("halo_original.csv", index=False)
-    df_dec.to_csv("halo_decompressed.csv", index=False)
+    out_dir = os.path.dirname(os.path.abspath(__file__))
+    df_orig.to_csv(os.path.join(out_dir, "halo_original.csv"), index=False)
+    df_dec.to_csv(os.path.join(out_dir, "halo_decompressed.csv"), index=False)
 
     # 只关心 dists：compute_metrics 返回 (dists, mass_orig, mass_dec)
     dists, mass_orig, mass_dec = compute_metrics(df_orig, df_dec)
 
-    # 保存 dists，供 run_pressio_pipeline.py 或其他代码读取
-    np.save("dists.npy", dists)
-    np.save("mass_orig.npy", mass_orig)
-    np.save("mass_dec.npy", mass_dec)   
-    # 调试信息写到 stderr，不影响 external stdout 协议
-    print(f"[external] saved dists, shape={dists.shape}", file=sys.stderr)
+    # 保存到脚本所在目录，供 run_pressio_pipeline 读取
+    np.save(os.path.join(out_dir, "dists.npy"), dists)
+    np.save(os.path.join(out_dir, "mass_orig.npy"), mass_orig)
+    np.save(os.path.join(out_dir, "mass_dec.npy"), mass_dec)
+    print(f"[external] saved dists to {out_dir}, shape={dists.shape}", file=sys.stderr)
 
-    # 清理临时文件
     cleanup(tmp_to_clean)
 
 if __name__ == "__main__":
