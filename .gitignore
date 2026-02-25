@@ -1,0 +1,74 @@
+############################
+# OS / Editor
+############################
+.DS_Store
+.vscode/
+*.swp
+
+############################
+# Python
+############################
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+############################
+# Build / CMake / AMReX / Reeber
+############################
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+Makefile
+*.o
+*.so
+*.a
+
+############################
+# Large scientific data (IMPORTANT)
+############################
+*.npy
+*.npz
+*.csv
+
+############################
+# Compression outputs
+############################
+*.sz
+*.qoz
+*.out
+tmp_*
+debug_log.txt
+
+############################
+# Pressio / pipeline temp files
+############################
+halo_tmp/
+dists.npy
+mass_dec.npy
+mass_orig.npy
+
+############################
+# Weird single-letter CLI files (from experiments)
+############################
+-i
+-I
+-o
+-m
+-M
+-b
+-d
+
+############################
+# Logs
+############################
+*.log
+
+
+
+############################
+# Pressio temp files
+############################
+.pressioin*
+.pressioout*
