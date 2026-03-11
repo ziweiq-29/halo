@@ -13,8 +13,7 @@ from datetime import datetime
 with open("debug_log.txt", "a") as f:
     f.write(f"\n[external] called at {datetime.now()} with args: {sys.argv}\n")
 
-# 保存原始的 stdout，用于输出 metrics（libpressio 要求）
-# 调试信息输出到 stderr
+
 original_stdout = sys.stdout
 sys.stdout = sys.stderr  # 默认输出到 stderr
 

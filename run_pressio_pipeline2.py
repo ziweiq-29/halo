@@ -62,7 +62,7 @@ csv_dir = args.artifact_root or os.path.join(script_dir, "csv")
 
 
 def _rel_to_eb_str(r):
-    """与 halo_dual_pressio2 文件名一致：科学计数法 1e-3、5e-2 等。"""
+    """与 halo_dual_pressio2 文件名一致：科学计数法 1e-3、5e-2 等"""
     if r is None:
         return "default"
     s = np.format_float_scientific(r, precision=12, unique=True, trim="0")
