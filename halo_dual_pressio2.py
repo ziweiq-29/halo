@@ -140,6 +140,8 @@ def main():
     parser.add_argument("--dim", type=int, action="append", required=True)
     parser.add_argument("--original_input", help="Path to original uncompressed input file")
     parser.add_argument("--eval_uuid", default="default")
+    parser.add_argument("--rel", type=float, default=None,
+                        help="Relative error bound (for halo_original_{eb}.csv / halo_decompressed_{eb}.csv filenames)")
     args, _ = parser.parse_known_args()
 
     dims = args.dim
@@ -230,19 +232,55 @@ def main():
                                       "decompressed", args.eval_uuid)
     tmp_to_clean.extend(tmp1 + tmp2)
 
-    # 如果你还想保留 halo 的 CSV，可以保留这两行；不需要可以删掉
-    # df_orig.to_csv("halo_original.csv", index=False)
-    # df_dec.to_csv("halo_decompressed.csv", index=False)
+    # 按 error bound 写 CSV；文件名用科学计数法，如 halo_original_1e-3.csv
+    def _eb_suffix(rel_val):
+        # pipeline2 可设 HALO_EB_STR=1e-3 与命令行一致
+        env_s = os.environ.get("HALO_EB_STR", "").strip()
+        if env_s:
+            return env_s.replace("/", "_").replace("\\", "_")
+        if rel_val is None:
+            return "default"
+        # 由 float 生成紧凑科学计数法：1e-3、5e-3、5e-2
+        s = np.format_float_scientific(rel_val, precision=12, unique=True, trim="0")
+        if "e" not in s.lower():
+            return str(rel_val)
+        s = s.lower()
+        i = s.index("e")
+        mant = s[:i].rstrip("0").rstrip(".")
+        if not mant or mant == "-":
+            mant = "0"
+        exp_part = s[i + 1 :]
+        try:
+            exp_i = int(exp_part)
+        except ValueError:
+            exp_i = exp_part
+        return f"{mant}e{exp_i}"
 
-    # 只关心 dists：compute_metrics 返回 (dists, mass_orig, mass_dec)
-    dists, mass_orig, mass_dec = compute_metrics(df_orig, df_dec)
+    eb = _eb_suffix(args.rel)
+    # pipeline2 设 HALO_COMPRESSOR=sz3 等，文件名带上 compress or 便于区分
+    comp = os.environ.get("HALO_COMPRESSOR", "").strip()
+    if comp:
+        eb = f"{comp}_{eb}"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    csv_dir = os.path.join(script_dir, "csv")
+    # 统一落到 halo/csv；未设 HALO_ARTIFACT_DIR 时也不要写回 script_dir（和 run_pressio_pipeline 一致）
+    artifact_dir = os.environ.get("HALO_ARTIFACT_DIR", "").strip() or csv_dir
+    os.makedirs(artifact_dir, exist_ok=True)
+    orig_csv = os.path.join(artifact_dir, f"halo_original_{eb}.csv")
+    dec_csv = os.path.join(artifact_dir, f"halo_decompressed_{eb}.csv")
+    df_orig.to_csv(orig_csv, index=False)
+    df_dec.to_csv(dec_csv, index=False)
+    print(f"[external] wrote {orig_csv} and {dec_csv}", file=sys.stderr)
 
-    # 保存 dists，供 run_pressio_pipeline.py 或其他代码读取
-    np.save("dists.npy", dists)
-    np.save("mass_orig.npy", mass_orig)
-    np.save("mass_dec.npy", mass_dec)   
-    # 调试信息写到 stderr，不影响 external stdout 协议
-    print(f"[external] saved dists, shape={dists.shape}", file=sys.stderr)
+    # 默认只写 CSV；只有显式 HALO_SAVE_NPY=1 才写 npy（pressio external 往往收不到 HALO_CSV_ONLY）
+    if os.environ.get("HALO_SAVE_NPY", "").strip() == "1":
+        dists, mass_orig, mass_dec = compute_metrics(df_orig, df_dec)
+        np.save(os.path.join(artifact_dir, "dists.npy"), dists)
+        np.save(os.path.join(artifact_dir, "mass_orig.npy"), mass_orig)
+        np.save(os.path.join(artifact_dir, "mass_dec.npy"), mass_dec)
+        print(f"[external] saved dists, shape={dists.shape}", file=sys.stderr)
+    else:
+        print("[external] CSV-only (no HALO_SAVE_NPY): skip dists.npy", file=sys.stderr)
 
     # 清理临时文件
     cleanup(tmp_to_clean)
