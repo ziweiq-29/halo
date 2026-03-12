@@ -61,6 +61,22 @@ original_input = args.original_input or args.input
 csv_dir = args.artifact_root or os.path.join(script_dir, "csv")
 
 
+def _eb_for_csv(compressor, r):
+    """与 halo_dual_pressio2 中 eb 一致：有 compressor 时为 sz3_1e-3 等"""
+    eb_str = _rel_to_eb_str(r)
+    if compressor:
+        return f"{compressor}_{eb_str}"
+    return eb_str
+
+
+def _csv_artifacts_exist(csv_dir, compressor, r):
+    """csv/ 里已有该 error bound 的 original + decompressed 则视为已算过，不必再跑 pressio"""
+    eb = _eb_for_csv(compressor, r)
+    orig = os.path.join(csv_dir, f"halo_original_{eb}.csv")
+    dec = os.path.join(csv_dir, f"halo_decompressed_{eb}.csv")
+    return os.path.isfile(orig) and os.path.isfile(dec)
+
+
 def _rel_to_eb_str(r):
     """与 halo_dual_pressio2 文件名一致：科学计数法 1e-3、5e-2 等"""
     if r is None:
@@ -149,6 +165,17 @@ if args.external_mode and input_file and len(dims) >= 3:
     def run_one_rel(r):
         ad = csv_dir
         eb_str = _rel_to_eb_str(r)
+        if _csv_artifacts_exist(ad, compressor, r):
+            print(
+                f"[pipeline2] skip rel={r} (eb={eb_str}): "
+                f"halo_*_{compressor}_{eb_str}.csv already in {ad}",
+                file=sys.stderr,
+            )
+            # 不用 "[external] skip:" 前缀，避免后面误走「external 未写 npy」空 JSON 分支
+            return subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="",
+                stderr="[pipeline2] skip: csv already exists for this error bound",
+            ), ad
         ext_cmd = (
             f"env HALO_ARTIFACT_DIR={shlex.quote(ad)} HALO_CSV_ONLY=1 "
             f"HALO_EB_STR={shlex.quote(eb_str)} "

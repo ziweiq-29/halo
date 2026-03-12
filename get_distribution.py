@@ -41,14 +41,16 @@ def _rel_to_eb_str(r):
     return f"{mant}e{exp_i}"
 
 
-error_bounds = [1e-3, 5e-3, 5e-2]
+error_bounds = [1e-3, 5e-3, 5e-2, 5e-4, 5e-5]
 
 # Wasserstein distance（你的统计表）
 wasserstein = {
     0.001: 647.035,
     0.005: 10613,
-    0.01: 21523.2,
-    0.05: 69455.6
+    0.05: 69455.6,
+    0.0005: 1101.37,
+    0.00005: 94.5272
+    
 }
 
 
@@ -110,8 +112,9 @@ labels = [
     f"{eb}\nW={wasserstein[eb]}"
     for eb in error_bounds
 ]
-
-plt.xticks(range(len(error_bounds)), labels)
+sorted_error_bounds = sorted(error_bounds)
+sorted_labels = [labels[error_bounds.index(eb)] for eb in sorted_error_bounds]
+plt.xticks(range(len(sorted_error_bounds)), sorted_labels)
 
 # ================================
 # 6. 图像标签
