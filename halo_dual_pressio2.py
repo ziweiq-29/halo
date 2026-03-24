@@ -3,6 +3,7 @@ import argparse
 import os
 import sys
 import subprocess
+import re
 import numpy as np
 import pandas as pd
 import h5py
@@ -131,6 +132,12 @@ def cleanup(paths):
         except OSError:
             pass
 
+
+def _safe_file_stem(path: str) -> str:
+    stem = os.path.splitext(os.path.basename(path))[0]
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-")
+    return safe or "unknown_file"
+
 def main():
     parser = argparse.ArgumentParser(description="Pressio external: dual halo + metrics (merged)")
     parser.add_argument("--input", required=True)
@@ -258,15 +265,21 @@ def main():
     eb = _eb_suffix(args.rel)
     # pipeline2 设 HALO_COMPRESSOR=sz3 等，文件名带上 compress or 便于区分
     comp = os.environ.get("HALO_COMPRESSOR", "").strip()
-    if comp:
-        eb = f"{comp}_{eb}"
+    comp_tag = comp if comp else "default"
     script_dir = os.path.dirname(os.path.abspath(__file__))
     csv_dir = os.path.join(script_dir, "csv")
-    # 统一落到 halo/csv；未设 HALO_ARTIFACT_DIR 时也不要写回 script_dir（和 run_pressio_pipeline 一致）
-    artifact_dir = os.environ.get("HALO_ARTIFACT_DIR", "").strip() or csv_dir
+    artifact_root = os.environ.get("HALO_ARTIFACT_DIR", "").strip() or csv_dir
+    env_file_name = os.environ.get("HALO_FILE_NAME", "").strip()
+    source_file_for_tag = (
+        env_file_name
+        if env_file_name
+        else (args.original_input if (args.original_input and os.path.exists(args.original_input)) else args.input)
+    )
+    file_tag = _safe_file_stem(source_file_for_tag)
+    artifact_dir = os.path.join(artifact_root, comp_tag, file_tag)
     os.makedirs(artifact_dir, exist_ok=True)
-    orig_csv = os.path.join(artifact_dir, f"halo_original_{eb}.csv")
-    dec_csv = os.path.join(artifact_dir, f"halo_decompressed_{eb}.csv")
+    orig_csv = os.path.join(artifact_dir, f"halo_original_{comp_tag}_{eb}_{file_tag}.csv")
+    dec_csv = os.path.join(artifact_dir, f"halo_decompressed_{comp_tag}_{eb}_{file_tag}.csv")
     df_orig.to_csv(orig_csv, index=False)
     df_dec.to_csv(dec_csv, index=False)
     print(f"[external] wrote {orig_csv} and {dec_csv}", file=sys.stderr)
