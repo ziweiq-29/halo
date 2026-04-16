@@ -53,6 +53,19 @@ def safe_compressor_tag(name: str) -> str:
     return SAFE_NAME_RE.sub("_", name.strip()).strip("_") or "cmp"
 
 
+def metric_token_for_filename(value: Optional[float]) -> str:
+    """Filesystem-safe token for CR / Wasserstein in PNG filenames."""
+    if value is None:
+        return "na"
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "na"
+    if not np.isfinite(v):
+        return "na"
+    return safe_compressor_tag(f"{v:.6g}") or "na"
+
+
 @dataclass
 class RunResult:
     compressor: str
@@ -167,7 +180,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--render",
         action="store_true",
-        help="Render a 3-panel comparison with PyVista if available.",
+        help="Render each view (original + per compressor) to its own PNG via PyVista if available.",
     )
     parser.add_argument(
         "--render-log",
@@ -235,7 +248,7 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=(1800, 650),
         metavar=("W", "H"),
-        help="Window size for rendering.",
+        help="Rendering uses a square viewport with side = max(W, H, 520) pixels.",
     )
     parser.add_argument(
         "--keep-all",
@@ -452,13 +465,12 @@ def compute_clim(values: np.ndarray, qmin: float, qmax: float) -> Tuple[float, f
     return vmin, vmax
 
 
-def render_one_row(
-    original: np.ndarray,
-    compare_volumes: Sequence[np.ndarray],
+def render_single_panel(
+    grid: "pv.ImageData",
     out_path: Path,
-    compare_runs: Sequence[RunResult],
-    surface_quantile: float,
+    *,
     render_style: str,
+    isosurface_level: float,
     volume_qmin: float,
     volume_qmax: float,
     volume_cmap: str,
@@ -469,82 +481,127 @@ def render_one_row(
     if pv is None:  # pragma: no cover - dependency guard
         raise RuntimeError("PyVista is not available; cannot render.")
 
-    original_grid = build_uniform_grid(original)
-    compare_grids = [build_uniform_grid(v) for v in compare_volumes]
-
-    base_values = original_grid["values"]
-    level = float(np.quantile(base_values[base_values > np.min(base_values)], surface_quantile))
     opacity_tf = [0.0, 0.0, 0.002, 0.008, 0.02, 0.05, 0.12, 0.22, 0.35]
-
-    panel_count = 1 + len(compare_grids)
-    plotter = pv.Plotter(shape=(1, panel_count), off_screen=True, window_size=window_size)  # type: ignore[union-attr]
-    overlays = ["Original"]
-    for run in compare_runs:
-        w = f"{run.wasserstein_distance:.6g}" if run.wasserstein_distance is not None else "N/A"
-        overlays.append(
-            f"{run.compressor.upper()}\n"
-            f"{run.error_key}={run.error_bound}\n"
-            f"CR={run.compression_ratio:.2f}\n"
-            f"W={w}"
+    plotter = pv.Plotter(off_screen=True, window_size=window_size)  # type: ignore[union-attr]
+    center = tuple((np.array(grid.bounds)[::2] + np.array(grid.bounds)[1::2]) / 2.0)
+    panel_values = grid["values"]
+    panel_clim = compute_clim(panel_values, volume_qmin, volume_qmax)
+    if render_style == "volume":
+        vol_mesh = (
+            grid.clip(normal=clip_normal, origin=center, invert=False) if use_clip else grid
         )
-    panels = [original_grid, *compare_grids]
-    for idx, grid in enumerate(panels):
-        plotter.subplot(0, idx)
-        center = tuple((np.array(grid.bounds)[::2] + np.array(grid.bounds)[1::2]) / 2.0)
-        panel_values = grid["values"]
-        panel_clim = compute_clim(panel_values, volume_qmin, volume_qmax)
-        if render_style == "volume":
-            vol_mesh = (
-                grid.clip(normal=clip_normal, origin=center, invert=False)
-                if use_clip
-                else grid
-            )
-            plotter.add_volume(
-                vol_mesh,
-                scalars="values",
-                cmap=volume_cmap,
-                clim=panel_clim,
-                opacity=opacity_tf,
-                blending="composite",
-                shade=False,
-                diffuse=0.8,
-                ambient=0.25,
-                specular=0.05,
-                show_scalar_bar=False,
-            )
-            plotter.show_bounds(
-                color="#5c6aa5",
-                font_size=8,
-                location="outer",
-                ticks="outside",
-                grid=False,
-            )
-        else:
-            contour = grid.contour(isosurfaces=[level], scalars="values")
-            surf_mesh = (
-                contour.clip(normal=clip_normal, origin=center) if use_clip else contour
-            )
-            plotter.add_mesh(
-                surf_mesh,
-                color="#cfc7b5",
-                smooth_shading=True,
-                specular=0.12,
-                diffuse=0.9,
-                ambient=0.2,
-                show_scalar_bar=False,
-            )
-        plotter.add_text(
-            overlays[idx],
-            position="upper_left",
-            font_size=12,
-            color="black",
-            shadow=True,
+        plotter.add_volume(
+            vol_mesh,
+            scalars="values",
+            cmap=volume_cmap,
+            clim=panel_clim,
+            opacity=opacity_tf,
+            blending="composite",
+            shade=False,
+            diffuse=0.8,
+            ambient=0.25,
+            specular=0.05,
+            show_scalar_bar=False,
         )
-        plotter.set_background("white")
-        plotter.camera_position = "iso"
-    plotter.link_views()
+        plotter.show_bounds(
+            color="#5c6aa5",
+            font_size=8,
+            location="outer",
+            ticks="outside",
+            grid=False,
+        )
+    else:
+        contour = grid.contour(isosurfaces=[isosurface_level], scalars="values")
+        surf_mesh = contour.clip(normal=clip_normal, origin=center) if use_clip else contour
+        plotter.add_mesh(
+            surf_mesh,
+            color="#cfc7b5",
+            smooth_shading=True,
+            specular=0.12,
+            diffuse=0.9,
+            ambient=0.2,
+            show_scalar_bar=False,
+        )
+        plotter.show_bounds(
+            color="#5c6aa5",
+            font_size=8,
+            location="outer",
+            ticks="outside",
+            grid=False,
+        )
+    plotter.set_background("white")
+    plotter.camera_position = "iso"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     plotter.screenshot(str(out_path))
     plotter.close()
+
+
+def render_panels_to_separate_pngs(
+    original: np.ndarray,
+    compare_volumes: Sequence[np.ndarray],
+    out_dir: Path,
+    compare_runs: Sequence[RunResult],
+    surface_quantile: float,
+    render_style: str,
+    volume_qmin: float,
+    volume_qmax: float,
+    volume_cmap: str,
+    clip_normal: Tuple[float, float, float],
+    use_clip: bool,
+    window_size: Tuple[int, int],
+    filename_prefix: str = "halo_compare",
+) -> List[Path]:
+    """
+    Render original + one panel per compare volume; each written as its own PNG.
+    Isosurface level (if used) is derived from the original volume only, matching
+    the previous multi-panel figure behavior.
+    """
+    if pv is None:  # pragma: no cover - dependency guard
+        raise RuntimeError("PyVista is not available; cannot render.")
+
+    original_grid = build_uniform_grid(original)
+    compare_grids = [build_uniform_grid(v) for v in compare_volumes]
+    base_values = original_grid["values"]
+    level = float(
+        np.quantile(base_values[base_values > np.min(base_values)], surface_quantile)
+    )
+
+    # CR/W only in filenames; original has no compression metrics.
+    panels: List[Tuple[Path, "pv.ImageData"]] = [
+        (
+            out_dir / f"{filename_prefix}_original_CRna_Wna.png",
+            original_grid,
+        )
+    ]
+    for run, cg in zip(compare_runs, compare_grids):
+        tag = safe_compressor_tag(run.compressor)
+        eb = safe_compressor_tag(str(run.error_bound))
+        cr_t = metric_token_for_filename(run.compression_ratio)
+        w_t = metric_token_for_filename(run.wasserstein_distance)
+        panels.append(
+            (
+                out_dir
+                / f"{filename_prefix}_{tag}_{run.error_key}_{eb}_CR{cr_t}_W{w_t}.png",
+                cg,
+            )
+        )
+
+    saved: List[Path] = []
+    for path, grid in panels:
+        render_single_panel(
+            grid,
+            path,
+            render_style=render_style,
+            isosurface_level=level,
+            volume_qmin=volume_qmin,
+            volume_qmax=volume_qmax,
+            volume_cmap=volume_cmap,
+            clip_normal=clip_normal,
+            use_clip=use_clip,
+            window_size=window_size,
+        )
+        saved.append(path)
+    return saved
 
 
 def save_summary(
@@ -703,7 +760,6 @@ def main() -> int:
                 flush=True,
             )
         else:
-            figure_path = workdir / "halo_compare.png"
             compare_runs: List[RunResult] = []
             compare_volumes: List[np.ndarray] = []
             for comp in compressors:
@@ -727,13 +783,13 @@ def main() -> int:
                 f"(shape {tuple(vo.shape)} -> {tuple(vo_ds.shape)})",
                 flush=True,
             )
-            panel_count = 1 + len(compare_ds)
             w, h = tuple(args.window_size)
-            scaled_window = (max(w, 520 * panel_count), h)
-            render_one_row(
+            side = max(int(w), int(h), 520)
+            panel_window = (side, side)
+            saved_paths = render_panels_to_separate_pngs(
                 vo_ds,
                 compare_ds,
-                figure_path,
+                workdir,
                 compare_runs,
                 args.surface_quantile,
                 args.render_style,
@@ -742,9 +798,10 @@ def main() -> int:
                 args.volume_cmap,
                 tuple(args.clip_normal),
                 args.render_clip,
-                scaled_window,
+                panel_window,
             )
-            print(f"Saved render to {figure_path}", flush=True)
+            for path in saved_paths:
+                print(f"Saved render to {path}", flush=True)
 
     return 0
 

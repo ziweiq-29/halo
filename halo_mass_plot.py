@@ -3,8 +3,8 @@
 Plot HALO catalogs as (x, y, z, mass): mass-weighted voxelization to a density grid,
 optional Gaussian smoothing (scipy), log1p, then PyVista volume rendering (Blues).
 
-CDF / CCDF of log10(mass) still use matplotlib and are composited under the 3D row
-when --mass-dist is on (default).
+Outputs are written as separate PNG files (one per catalog). CDF/CCDF composites
+are no longer produced.
 """
 
 import argparse
@@ -38,14 +38,14 @@ except ImportError:  # pragma: no cover
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Plot HALO (x,y,z,mass) as density volume + matplotlib CDF.")
+    p = argparse.ArgumentParser(description="Plot HALO (x,y,z,mass) as separate density-volume PNGs.")
     p.add_argument("--original", required=True, help="Path to original halo CSV.")
     p.add_argument(
         "--decompressed",
         action="append",
         default=[],
         metavar="CSV",
-        help="Decompressed halo CSV; repeat this flag for multiple catalogs on one figure.",
+        help="Decompressed halo CSV; repeat to emit one PNG per decompressed catalog.",
     )
     p.add_argument(
         "--decompressed-label",
@@ -63,7 +63,11 @@ def parse_args() -> argparse.Namespace:
             "is omitted, append W to labels: '<compressor> <eb> W=<wasserstein_distance>'."
         ),
     )
-    p.add_argument("--output", required=True, help="Output PNG path.")
+    p.add_argument(
+        "--output",
+        required=True,
+        help="Output .png path (used as filename prefix) or output directory.",
+    )
     p.add_argument(
         "--top-frac",
         type=float,
@@ -163,6 +167,7 @@ _DEC_BASENAME_RE = re.compile(
 _DEC_META_RE = re.compile(
     r"^halo_decompressed_([^_]+)_([^_]+)_(.+)\.csv$", re.IGNORECASE
 )
+SAFE_NAME_RE = re.compile(r"[^a-zA-Z0-9._-]+")
 
 
 def short_dec_label(path: str) -> str:
@@ -179,6 +184,10 @@ def _norm_eb(text: str) -> str:
         return f"{float(str(text).strip()):.12g}"
     except Exception:
         return str(text).strip()
+
+
+def safe_name(text: str) -> str:
+    return SAFE_NAME_RE.sub("_", str(text).strip()).strip("_") or "na"
 
 
 def _parse_dec_meta(path: str) -> Optional[Tuple[str, str, str]]:
@@ -226,6 +235,30 @@ def label_with_w(
     if w is None:
         return f"{base} W=N/A"
     return f"{base} W={w:.6g}"
+
+
+def wasserstein_for_dec(
+    dec_path: str,
+    halo_metrics_dir: Optional[str],
+    input_ext: str = ".hdf5",
+) -> Optional[float]:
+    if not halo_metrics_dir:
+        return None
+    meta = _parse_dec_meta(dec_path)
+    if not meta:
+        return None
+    comp, eb, file_tag = meta
+    csv_path = Path(halo_metrics_dir).expanduser().resolve() / f"{comp}_halo.csv"
+    w_map = _load_w_lookup(csv_path)
+    inp = f"{file_tag}{input_ext}"
+    return w_map.get((inp, _norm_eb(eb)))
+
+
+def output_prefix_and_dir(out: Path) -> Tuple[Path, str]:
+    out = out.expanduser().resolve()
+    if out.suffix.lower() == ".png":
+        return out.parent, safe_name(out.stem)
+    return out, "halo_mass"
 
 
 def empirical_cdf_ccdf(logm: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -393,7 +426,7 @@ def add_halo_structure(
         show_scalar_bar=False,
     )
     if show_outline:
-        plotter.add_mesh(grid.outline(), color="#5c6aa5", opacity=0.25)
+        plotter.add_mesh(grid.outline(), color="#5c6aa5", opacity=0.25, line_width=3.0)
     if show_title and title and str(title).strip():
         plotter.add_text(title, position="upper_left", font_size=11, color="black", shadow=True)
 
@@ -532,18 +565,20 @@ def render_volume_single(
     *,
     show_title: bool,
 ) -> np.ndarray:
-    return render_volume_split(
-        [cat],
-        [title if show_title else ""],
-        xlim,
-        ylim,
-        zlim,
-        elev,
-        azim,
-        window_size,
-        grid_dims,
-        gaussian_sigma,
-    )
+    # Match pressio_halo_compare.py behavior: square viewport with side=max(W,H,520).
+    w, h = tuple(window_size)
+    side = max(int(w), int(h), 520)
+    plotter = pv.Plotter(off_screen=True, window_size=(side, side))
+    bnds = _camera_bounds(xlim, ylim, zlim)
+    mins = np.array([xlim[0], ylim[0], zlim[0]], dtype=np.float64)
+    maxs = np.array([xlim[1], ylim[1], zlim[1]], dtype=np.float64)
+    grid = halo_to_density_grid(cat, dims=grid_dims, sigma=gaussian_sigma, mins=mins, maxs=maxs)
+    add_halo_structure(plotter, grid, title if show_title else "")
+    plotter.set_background("white")
+    _apply_camera(plotter, elev, azim, bnds)
+    img = _screenshot_plotter(plotter)
+    plotter.close()
+    return img
 
 
 def save_composite_with_cdf(
@@ -568,13 +603,10 @@ def save_composite_with_cdf(
 
 
 def save_image_only(img_rgba: np.ndarray, title: str, out_path: Path) -> None:
-    fig, ax = plt.subplots(figsize=(10, 7), constrained_layout=True)
-    ax.imshow(img_rgba, aspect="auto")
-    ax.axis("off")
-    fig.suptitle(title)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=240, bbox_inches="tight")
-    plt.close(fig)
+    # Save the raw rendered frame directly (no matplotlib re-layout/resampling),
+    # so the cube appearance matches prior PyVista screenshots.
+    mpimg.imsave(out_path, img_rgba)
 
 
 def main() -> int:
@@ -598,20 +630,42 @@ def main() -> int:
         filter_top_mass(load_catalog(p), args.top_frac) for p in dec_paths
     ]
 
-    logm_o = log10_mass(orig)
-    all_logm = [logm_o] + [log10_mass(d) for d in decompresseds]
     xlim, ylim, zlim = axis_limits(orig, *decompresseds) if dec_paths else axis_limits(orig)
-    pct = int(round(float(np.clip(args.top_frac, 0.0, 1.0)) * 100))
     wsize = tuple(args.window_size)
+    out_dir, out_prefix = output_prefix_and_dir(Path(args.output))
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    out = Path(args.output)
+    # Always render separate PNGs (no CDF/CCDF composite).
+    img_o = render_volume_single(
+        orig,
+        "",
+        xlim,
+        ylim,
+        zlim,
+        args.elev,
+        args.azim,
+        wsize,
+        args.grid_dims,
+        args.gaussian_sigma,
+        show_title=False,
+    )
+    out_original = out_dir / f"{out_prefix}_original.png"
+    save_image_only(img_o, "", out_original)
+    print(f"Saved: {out_original}")
 
-    if not dec_paths:
-        dist_series: List[Tuple[str, np.ndarray]] = [("original", logm_o)]
-        title_3d = f"Original (top {pct}% mass)" if args.mass_dist else "Original"
-        img = render_volume_single(
-            orig,
-            "" if args.mass_dist else title_3d,
+    for dec_path, dec_cat in zip(dec_paths, decompresseds):
+        meta = _parse_dec_meta(dec_path)
+        if meta:
+            comp, eb, _file_tag = meta
+            w = wasserstein_for_dec(dec_path, args.halo_metrics_dir)
+            w_token = safe_name("na" if w is None else f"{float(w):.6g}")
+            out_name = f"{out_prefix}_{safe_name(comp)}_{safe_name(eb)}_W{w_token}.png"
+        else:
+            out_name = f"{out_prefix}_{safe_name(Path(dec_path).stem)}_Wna.png"
+        out_path = out_dir / out_name
+        img_d = render_volume_single(
+            dec_cat,
+            "",
             xlim,
             ylim,
             zlim,
@@ -620,70 +674,11 @@ def main() -> int:
             wsize,
             args.grid_dims,
             args.gaussian_sigma,
-            show_title=not args.mass_dist,
+            show_title=False,
         )
-        if args.mass_dist:
-            save_composite_with_cdf(img, dist_series, args.title, args.ccdf_log_y, out)
-        else:
-            save_image_only(img, args.title, out)
-        print(f"Saved: {out}")
-        return 0
+        save_image_only(img_d, "", out_path)
+        print(f"Saved: {out_path}")
 
-    dist_series = [("original", logm_o)] + list(zip(dec_labels, all_logm[1:]))
-
-    if args.layout == "overlay":
-        img = render_volume_overlay(
-            orig,
-            decompresseds,
-            dec_labels,
-            xlim,
-            ylim,
-            zlim,
-            args.elev,
-            args.azim,
-            args.top_frac,
-            wsize,
-            args.grid_dims,
-            args.gaussian_sigma,
-            show_title=not args.mass_dist,
-        )
-        if args.mass_dist:
-            save_composite_with_cdf(img, dist_series, args.title, args.ccdf_log_y, out)
-        else:
-            save_image_only(img, args.title, out)
-    else:
-        cats = [orig] + decompresseds
-        titles = [f"Original (top {pct}% mass)"] + [f"{lab} (top {pct}%)" for lab in dec_labels]
-        img = render_volume_split(
-            cats,
-            titles,
-            xlim,
-            ylim,
-            zlim,
-            args.elev,
-            args.azim,
-            wsize,
-            args.grid_dims,
-            args.gaussian_sigma,
-        )
-        if args.mass_dist:
-            fig = plt.figure(figsize=(min(28, max(12, 4.0 * len(cats))), 11))
-            gs = fig.add_gridspec(2, 1, height_ratios=[2.4, 1], hspace=0.35)
-            ax_img = fig.add_subplot(gs[0, 0])
-            ax_img.imshow(img, aspect="auto")
-            ax_img.axis("off")
-            bot = gs[1].subgridspec(1, 2, wspace=0.28)
-            ax_cdf = fig.add_subplot(bot[0, 0])
-            ax_ccdf = fig.add_subplot(bot[0, 1])
-            plot_mass_cdf_ccdf(ax_cdf, ax_ccdf, dist_series, args.ccdf_log_y)
-            fig.suptitle(args.title)
-            out.parent.mkdir(parents=True, exist_ok=True)
-            fig.savefig(out, dpi=240, bbox_inches="tight")
-            plt.close(fig)
-        else:
-            save_image_only(img, args.title, out)
-
-    print(f"Saved: {out}")
     return 0
 
 

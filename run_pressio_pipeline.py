@@ -4,6 +4,7 @@ import subprocess
 import sys
 import os
 import json
+import time
 import numpy as np
 
 
@@ -47,7 +48,11 @@ if args.decompressed:
                 "--external_exe", halo_exe, "--original_input", original_input or args.input]
     for d in dims:
         halo_cmd.extend(["--dim", str(d)])
-    result = subprocess.run(halo_cmd, capture_output=True, text=True,env=env)
+    t0 = time.perf_counter()
+    result = subprocess.run(halo_cmd, capture_output=True, text=True, env=env)
+    app_sec = time.perf_counter() - t0
+    # Parsed by compression_framework/run_halo_pressio.py as app_eval_sec (sum if many chunks).
+    print(f"[HALO_APP] app_eval_sec={app_sec:.15g}", file=sys.stderr, flush=True)
     if result.stderr:
         sys.stderr.write(result.stderr)
     if result.returncode != 0:
